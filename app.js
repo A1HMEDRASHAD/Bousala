@@ -11,7 +11,7 @@ import {
   increment 
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-// 1. إعدادات Firebase الخاصة بك
+// 1. إعدادات Firebase الخاصة بشبكة البوصلة
 const firebaseConfig = {
   apiKey: "AIzaSyAd4Df_Fpp2GlGkRPyvmKuFW68LbL_a4yU",
   authDomain: "rawi-01.firebaseapp.com",
@@ -22,15 +22,20 @@ const firebaseConfig = {
   measurementId: "G-2VNWNSZLBJ"
 };
 
+const DEFAULT_LOGO = "https://i.ibb.co/BHHHLttP/image.png";
+const DEFAULT_FAVICON = "https://i.ibb.co/WWSTnMgd/image.jpg";
+
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// حالة التطبيق العامة
+// حالة الموقع العام والإعدادات الافتراضية المرنة
 let siteSettings = {
   siteName: "بوصلة السياسة اليمنية",
   networkName: "شبكة البوصلة",
   siteDesc: "منصة إخبارية وتحليلية ترصد كواليس السياسة والتقنية والثقافة",
-  logoUrl: "",
+  logoUrl: DEFAULT_LOGO,
+  faviconUrl: DEFAULT_FAVICON,
+  hideTextLogo: true,
   accentColor: "#3b82f6",
   adsEnabled: false,
   customAdText: "",
@@ -39,13 +44,13 @@ let siteSettings = {
 
 let publishedPosts = [];
 let categories = [];
-let activeAds = []; // الإعلانات المخصصة من مجموعة ads
+let activeAds = [];
 let selectedCategory = "all";
 let selectedSubcategory = "all";
 let searchQuery = "";
-const trackedAdImpressions = new Set(); // لمنع تكرار حساب الظهور في نفس الجلسة
+const trackedAdImpressions = new Set();
 
-// 2. تهيئة الموقع عند التحميل
+// 2. تشغيل الموقع العام وجلب البيانات بالتوازي
 async function bootPublicSite() {
   initTheme();
   await Promise.all([
@@ -61,22 +66,65 @@ async function bootPublicSite() {
   handleUrlRouting();
 }
 
-// 3. جلب الهوية المرنة (White-Label Settings)
+// 3. جلب وتطبيق الهوية البصرية والشعار الأفقي وأيقونة محركات البحث
 async function fetchSettings() {
   try {
     const snap = await getDoc(doc(db, "settings", "global"));
     if (snap.exists()) {
-      siteSettings = { ...siteSettings, ...snap.data() };
+      const data = snap.data();
+      siteSettings = {
+        ...siteSettings,
+        ...data,
+        logoUrl: data.logoUrl || DEFAULT_LOGO,
+        faviconUrl: data.faviconUrl || DEFAULT_FAVICON
+      };
     }
     applyWhiteLabelIdentity();
   } catch (err) {
     console.warn("Settings fetch notice:", err);
+    applyWhiteLabelIdentity();
   }
 }
 
 function applyWhiteLabelIdentity() {
+  const activeLogo = siteSettings.logoUrl || DEFAULT_LOGO;
+  const activeFavicon = siteSettings.faviconUrl || DEFAULT_FAVICON;
+
+  // تحديث عنوان المتصفح والوصف وأيقونة محركات البحث (Favicon)
   document.title = `${siteSettings.siteName} | ${siteSettings.networkName}`;
   document.getElementById("meta-desc")?.setAttribute("content", siteSettings.siteDesc || "");
+  document.getElementById("og-title")?.setAttribute("content", `${siteSettings.siteName} | ${siteSettings.networkName}`);
+  document.getElementById("og-desc")?.setAttribute("content", siteSettings.siteDesc || "");
+  document.getElementById("og-image")?.setAttribute("content", activeLogo);
+
+  const favEl = document.getElementById("dynamic-favicon");
+  const appleFavEl = document.getElementById("apple-favicon");
+  if (favEl) favEl.href = activeFavicon;
+  if (appleFavEl) appleFavEl.href = activeFavicon;
+
+  // تحديث الشعار الأفقي في الترويسة العلوية والتذييل السفلي
+  const headerLogo = document.getElementById("custom-logo-img");
+  const footerLogo = document.getElementById("footer-logo-img");
+  if (headerLogo) {
+    headerLogo.src = activeLogo;
+    headerLogo.alt = siteSettings.siteName;
+  }
+  if (footerLogo) {
+    footerLogo.src = activeLogo;
+    footerLogo.alt = siteSettings.siteName;
+  }
+
+  // إخفاء أو إظهار النص بجانب الشعار حسب إعدادات غرفة العمليات
+  const brandTextWrap = document.getElementById("brand-text-wrap");
+  if (brandTextWrap) {
+    if (siteSettings.hideTextLogo !== false) {
+      brandTextWrap.classList.add("hidden");
+    } else {
+      brandTextWrap.classList.remove("hidden");
+    }
+  }
+
+  // تحديث النصوص واللون الأساسي
   document.getElementById("ui-site-name").textContent = siteSettings.siteName;
   document.getElementById("ui-network-name").textContent = siteSettings.networkName;
   document.getElementById("footer-site-name").textContent = siteSettings.siteName;
@@ -87,24 +135,17 @@ function applyWhiteLabelIdentity() {
     document.documentElement.style.setProperty("--accent", siteSettings.accentColor);
   }
 
-  if (siteSettings.logoUrl) {
-    const img = document.getElementById("custom-logo-img");
-    img.src = siteSettings.logoUrl;
-    img.classList.remove("hidden");
-    document.getElementById("default-logo-icon")?.classList.add("hidden");
-  }
-
-  // روابط التواصل في الفوتر
+  // روابط منصات التواصل في الفوتر
   const socialContainer = document.getElementById("footer-social-links");
   const links = [];
-  if (siteSettings.socialWhatsapp) links.push(`<a href="${siteSettings.socialWhatsapp}" target="_blank" class="social-pill">واتساب</a>`);
-  if (siteSettings.socialTelegram) links.push(`<a href="${siteSettings.socialTelegram}" target="_blank" class="social-pill">تيليجرام</a>`);
-  if (siteSettings.socialX) links.push(`<a href="${siteSettings.socialX}" target="_blank" class="social-pill">منصة X</a>`);
-  if (siteSettings.socialFacebook) links.push(`<a href="${siteSettings.socialFacebook}" target="_blank" class="social-pill">فيسبوك</a>`);
+  if (siteSettings.socialWhatsapp) links.push(`<a href="${siteSettings.socialWhatsapp}" target="_blank" rel="noopener" class="social-pill">واتساب</a>`);
+  if (siteSettings.socialTelegram) links.push(`<a href="${siteSettings.socialTelegram}" target="_blank" rel="noopener" class="social-pill">تيليجرام</a>`);
+  if (siteSettings.socialX) links.push(`<a href="${siteSettings.socialX}" target="_blank" rel="noopener" class="social-pill">منصة X</a>`);
+  if (siteSettings.socialFacebook) links.push(`<a href="${siteSettings.socialFacebook}" target="_blank" rel="noopener" class="social-pill">فيسبوك</a>`);
   socialContainer.innerHTML = links.join("");
 }
 
-// 4. جلب الأقسام وبناء شريط One UI
+// 4. جلب الأقسام وبناء شريط التنقل
 async function fetchCategories() {
   try {
     const snap = await getDocs(collection(db, "categories"));
@@ -174,7 +215,7 @@ function renderSubcategoriesBar() {
   });
 }
 
-// 5. جلب المنشورات المنشورة فقط
+// 5. جلب المقالات المنشورة فقط
 async function fetchPublishedPosts() {
   try {
     const q = query(collection(db, "posts"), orderBy("createdAt", "desc"));
@@ -186,7 +227,7 @@ async function fetchPublishedPosts() {
   }
 }
 
-// 6. محرك الإعلانات المخصصة والرعايات (جلب + عرض + تتبع الظهور والنقرات)
+// 6. محرك الرعايات والإعلانات الزجاجية (جلب + عرض + تتبع الظهور والنقرات)
 async function fetchSponsoredAds() {
   try {
     const snap = await getDocs(collection(db, "ads"));
@@ -197,14 +238,13 @@ async function fetchSponsoredAds() {
     activeAds = [];
   }
 
-  // في حال عدم وجود إعلانات في مجموعة ads وتفعيل الإعلان السريع في الإعدادات
   if (activeAds.length === 0 && siteSettings.adsEnabled && siteSettings.customAdText) {
     activeAds.push({
       id: "global_fallback_ad",
       title: siteSettings.customAdText,
       sponsorName: siteSettings.networkName,
       targetUrl: siteSettings.customAdLink || "#",
-      imageUrl: siteSettings.logoUrl || "",
+      imageUrl: siteSettings.logoUrl || DEFAULT_LOGO,
       placement: "all",
       isFallback: true
     });
@@ -214,13 +254,13 @@ async function fetchSponsoredAds() {
 function getAdForPlacement(placementKey) {
   if (!activeAds.length) return null;
   const matching = activeAds.filter(a => !a.placement || a.placement === "all" || a.placement === placementKey);
-  if (!matching.length) return activeAds[0];
+  if (!matching.length) return null;
   return matching[Math.floor(Math.random() * matching.length)];
 }
 
 function buildGlassAdHtml(ad, uniqueDomId) {
   if (!ad) return "";
-  // تسجيل الظهور (Impression) تلقائياً في قاعدة البيانات
+
   if (!ad.isFallback && !trackedAdImpressions.has(ad.id + "_" + uniqueDomId)) {
     trackedAdImpressions.add(ad.id + "_" + uniqueDomId);
     updateDoc(doc(db, "ads", ad.id), { views: increment(1) }).catch(() => {});
@@ -275,7 +315,7 @@ function renderBreakingTicker() {
   `).join("");
 }
 
-// 8. عرض الصفحة الرئيسية (Hero + بطاقات الأخبار + إعلان مدمج بين البطاقات)
+// 8. عرض الصفحة الرئيسية (Hero + الشبكة + إعلان مدمج بين البطاقات)
 function renderHomeFeed() {
   const heroContainer = document.getElementById("hero-section");
   const gridContainer = document.getElementById("posts-grid");
@@ -306,16 +346,16 @@ function renderHomeFeed() {
 
   if (filtered.length === 0) {
     heroContainer.innerHTML = "";
-    gridContainer.innerHTML = `<div class="glass-surface" style="padding:32px;text-align:center;border-radius:22px;grid-column:1/-1;color:var(--text-secondary);">لا توجد مواد صحفية منشورة في هذا القسم حالياً.</div>`;
+    gridContainer.innerHTML = `<div class="glass-surface skeleton-card">لا توجد مواد صحفية منشورة في هذا القسم حالياً.</div>`;
     return;
   }
 
-  // اختيار مقال الصدارة (Hero)
+  const defaultThumb = siteSettings.logoUrl || DEFAULT_LOGO;
   let heroPost = filtered.find(p => p.isFeatured) || filtered[0];
   let restPosts = filtered.filter(p => p.id !== heroPost.id);
 
   if (selectedCategory === "all" && !searchQuery && heroPost) {
-    const heroImg = heroPost.imageUrl || "https://via.placeholder.com/800x500/1e293b/94a3b8?text=Bosla+Network";
+    const heroImg = heroPost.imageUrl || defaultThumb;
     heroContainer.innerHTML = `
       <div class="glass-surface hero-card" onclick="window.openArticle('${heroPost.id}')">
         <div class="hero-img-wrap">
@@ -339,12 +379,11 @@ function renderHomeFeed() {
     restPosts = filtered;
   }
 
-  // بناء شبكة البطاقات مع دمج إعلان زجاجي أنيق بعد البطاقة الثالثة
   const cardsHtml = [];
   const feedAd = getAdForPlacement("between_posts");
 
   restPosts.forEach((post, index) => {
-    const img = post.imageUrl || "https://via.placeholder.com/600x400/1e293b/94a3b8?text=Bosla";
+    const img = post.imageUrl || defaultThumb;
     cardsHtml.push(`
       <article class="glass-surface news-card" onclick="window.openArticle('${post.id}')">
         <div class="card-thumb-wrap">
@@ -370,7 +409,7 @@ function renderHomeFeed() {
   gridContainer.innerHTML = cardsHtml.join("");
 }
 
-// 9. خوارزمية الأكثر قراءة (Trending Algorithm)
+// 9. خوارزمية الأكثر قراءة (Trending)
 function renderTrendingSidebar() {
   const container = document.getElementById("trending-list");
   const sorted = [...publishedPosts].sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 5);
@@ -391,7 +430,7 @@ function renderTrendingSidebar() {
   `).join("");
 }
 
-// 10. فتح وقراءة المقال الكامل + تحديث Google News Schema + حقن الإعلان الوسطي
+// 10. قراءة المقال الكامل + حقن الإعلان الوسطي + تحديث Schema أخبار جوجل
 window.openArticle = async (postId) => {
   const post = publishedPosts.find(p => p.id === postId);
   if (!post) return;
@@ -400,12 +439,10 @@ window.openArticle = async (postId) => {
   showView("view-article");
   window.scrollTo({ top: 0, behavior: "smooth" });
 
-  // زيادة عداد القراءات في قاعدة البيانات
   post.views = (post.views || 0) + 1;
   updateDoc(doc(db, "posts", postId), { views: increment(1) }).catch(() => {});
   renderTrendingSidebar();
 
-  // تعبئة بيانات المقال
   document.getElementById("art-badges").innerHTML = `
     <span class="badge-pill">${post.categoryName || "تحليلات"}</span>
     ${post.subcategory ? `<span class="badge-pill">${post.subcategory}</span>` : ""}
@@ -416,7 +453,6 @@ window.openArticle = async (postId) => {
   document.getElementById("art-date").textContent = formatArabicDate(post.createdAt);
   document.getElementById("art-views").textContent = post.views;
 
-  // عند الضغط على اسم الكاتب تفتح صفحته الخاصة
   document.getElementById("art-author-btn").onclick = () => openAuthorProfile(post.author || "هيئة التحرير");
 
   const fig = document.getElementById("art-figure");
@@ -429,19 +465,18 @@ window.openArticle = async (postId) => {
     fig.classList.add("hidden");
   }
 
-  // تنسيق متن المقال وحقن الإعلان الزجاجي بعد الفقرة الثانية
   const formattedParagraphs = formatArticleContent(post.content || "");
   const inArticleAd = getAdForPlacement("in_article");
   if (inArticleAd && formattedParagraphs.length >= 2) {
     formattedParagraphs.splice(2, 0, `<div class="ad-slot-wrapper">${buildGlassAdHtml(inArticleAd, "article_mid_" + post.id)}</div>`);
+  } else if (inArticleAd) {
+    formattedParagraphs.push(`<div class="ad-slot-wrapper">${buildGlassAdHtml(inArticleAd, "article_end_" + post.id)}</div>`);
   }
   document.getElementById("art-body").innerHTML = formattedParagraphs.join("");
 
-  // الوسوم
   const tagsEl = document.getElementById("art-tags");
   tagsEl.innerHTML = (post.tags || []).map(t => `<span class="tag-chip">#${t}</span>`).join("");
 
-  // أزرار المشاركة
   const shareUrl = window.location.href;
   const shareTitle = `${post.title} - ${siteSettings.siteName}`;
   document.getElementById("share-wa").onclick = () => window.open(`https://wa.me/?text=${encodeURIComponent(shareTitle + "\n" + shareUrl)}`, "_blank");
@@ -452,10 +487,8 @@ window.openArticle = async (postId) => {
     showPublicToast("تم نسخ رابط المقال بنجاح");
   };
 
-  // تحديث بيانات Google News Schema (JSON-LD) للأرشفة القياسية
   updateArticleSeoSchema(post, shareUrl);
 
-  // مقالات ذات صلة
   const related = publishedPosts.filter(p => p.id !== post.id && p.category === post.category).slice(0, 3);
   document.getElementById("related-grid").innerHTML = related.map(r => `
     <article class="glass-surface news-card" onclick="window.openArticle('${r.id}')">
@@ -495,7 +528,7 @@ function updateArticleSeoSchema(post, url) {
     "@type": "NewsArticle",
     "headline": post.title,
     "description": post.summary || "",
-    "image": post.imageUrl ? [post.imageUrl] : [],
+    "image": [post.imageUrl || siteSettings.logoUrl || DEFAULT_LOGO],
     "datePublished": isoDate,
     "author": [{
       "@type": "Person",
@@ -503,14 +536,18 @@ function updateArticleSeoSchema(post, url) {
     }],
     "publisher": {
       "@type": "Organization",
-      "name": siteSettings.networkName
+      "name": siteSettings.networkName,
+      "logo": {
+        "@type": "ImageObject",
+        "url": siteSettings.logoUrl || DEFAULT_LOGO
+      }
     },
     "mainEntityOfPage": url
   };
   schemaScript.textContent = JSON.stringify(schemaData);
 }
 
-// 11. صفحة ملف الكاتب
+// 11. صفحة الكاتب
 function openAuthorProfile(authorName) {
   showView("view-author");
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -534,7 +571,7 @@ function openAuthorProfile(authorName) {
   `).join("");
 }
 
-// 12. إدارة التنقل والروابط المباشرة والبحث والمظهر
+// 12. إدارة التنقل، البحث، والمظهر الليلي/النهاري
 function showView(viewId) {
   ["view-home", "view-article", "view-author"].forEach(id => {
     const el = document.getElementById(id);
@@ -585,7 +622,6 @@ document.getElementById("home-brand-link").addEventListener("click", (e) => {
   renderHomeFeed();
 });
 
-// البحث الفوري
 const searchDrawer = document.getElementById("search-drawer");
 const searchInput = document.getElementById("global-search-input");
 
@@ -607,7 +643,6 @@ searchInput.addEventListener("input", (e) => {
   renderHomeFeed();
 });
 
-// الوضع الليلي والنهاري
 function initTheme() {
   const saved = localStorage.getItem("bosla_theme") || "dark";
   document.documentElement.setAttribute("data-theme", saved);
@@ -629,7 +664,6 @@ function updateThemeIcon(theme) {
 
 document.getElementById("theme-toggle-btn").addEventListener("click", toggleTheme);
 
-// أزرار الشريط السفلي للهواتف (One UI Mobile Nav)
 document.querySelectorAll(".mob-nav-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     const action = btn.dataset.action;
