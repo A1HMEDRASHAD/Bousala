@@ -6,8 +6,6 @@ import {
   getDoc, 
   getDocs, 
   updateDoc, 
-  query, 
-  orderBy, 
   increment 
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
@@ -24,6 +22,21 @@ const firebaseConfig = {
 
 const DEFAULT_LOGO = "https://i.ibb.co/BHHHLttP/image.png";
 const DEFAULT_FAVICON = "https://i.ibb.co/WWSTnMgd/image.jpg";
+
+// دوال حماية صارمة لمنع انهيار المحرك تحت أي ظرف
+const $ = (id) => document.getElementById(id);
+const safeOn = (id, event, handler) => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(event, handler);
+};
+const setText = (id, val) => {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val ?? "";
+};
+const setHtml = (id, val) => {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = val ?? "";
+};
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -98,7 +111,17 @@ const I18N = {
   }
 };
 
-// متغيرات حالة الموقع العام
+// الأقسام الافتراضية الذكية (تعمل فوراً وتُحدّث تلقائياً من غرفة العمليات)
+const FALLBACK_CATEGORIES = [
+  { name: "محلية", nameEn: "Local News", slug: "local", icon: "location_on", order: 1, visible: true, subcategories: ["السياسة اليمنية", "شؤون المحافظات"] },
+  { name: "دولية", nameEn: "International", slug: "world", icon: "public", order: 2, visible: true, subcategories: ["الشرق الأوسط", "السياسة الدولية"] },
+  { name: "تحقيقات وتقارير", nameEn: "Reports", slug: "reports", icon: "policy", order: 3, visible: true, subcategories: ["ملفات خاصة", "تقارير معمقة"] },
+  { name: "حوارات", nameEn: "Interviews", slug: "interviews", icon: "forum", order: 4, visible: true, subcategories: [] },
+  { name: "المقالات", nameEn: "Articles", slug: "articles", icon: "edit_note", order: 5, visible: true, subcategories: [] },
+  { name: "نافذة التقنية", nameEn: "Technology", slug: "tech", icon: "memory", order: 6, visible: true, subcategories: [] },
+  { name: "الثقافة والفن", nameEn: "Culture & Art", slug: "culture", icon: "theater_comedy", order: 7, visible: true, subcategories: [] }
+];
+
 let currentLang = "ar";
 let siteSettings = {
   siteName: "بوصلة السياسة اليمنية",
@@ -122,7 +145,7 @@ let siteSettings = {
 };
 
 let publishedPosts = [];
-let categories = [];
+let categories = [...FALLBACK_CATEGORIES];
 let activeAds = [];
 let selectedCategory = "all";
 let selectedSubcategory = "all";
@@ -130,15 +153,132 @@ let searchQuery = "";
 const trackedAdImpressions = new Set();
 
 function t(key) {
-  return I18N[currentLang]?.[key] || I18N.ar[key] || key;
+  return (I18N[currentLang] && I18N[currentLang][key]) ? I18N[currentLang][key] : (I18N.ar[key] || key);
 }
 
-// 3. تهيئة الموقع عند التحميل
-async function bootPublicSite() {
+// 3. تفعيل جميع الأزرار والتفاعلات فوراً عند فتح الصفحة (دون انتظار الشبكة)
+function bindImmediateUIEvents() {
   initTheme();
   initLanguage();
+  applyLanguageAndIdentity();
+  renderCategoriesNav();
+  renderSidebarMenu();
+  updateMobileNavPill();
 
-  await Promise.all([
+  // أزرار القائمة الجانبية
+  safeOn("open-sidebar-btn", "click", openSidebarDrawer);
+  safeOn("close-sidebar-btn", "click", closeSidebarDrawer);
+  safeOn("sidebar-backdrop", "click", closeSidebarDrawer);
+
+  // زر تبديل المظهر الليلي/النهاري
+  safeOn("theme-toggle-btn", "click", toggleTheme);
+
+  // زر تبديل اللغة (عربي / EN)
+  safeOn("lang-toggle-btn", "click", () => {
+    currentLang = currentLang === "ar" ? "en" : "ar";
+    localStorage.setItem("bosla_lang", currentLang);
+    applyDocumentDirection();
+    applyLanguageAndIdentity();
+    renderCategoriesNav();
+    renderSidebarMenu();
+    renderSubcategoriesBar();
+    renderBreakingTicker();
+    renderTopBannerAd();
+    renderTrendingSidebar();
+
+    const params = new URLSearchParams(window.location.search);
+    const postId = params.get("post");
+    const pageId = params.get("page");
+    if (postId && publishedPosts.some(p => p.id === postId)) {
+      window.openArticle(postId, false);
+    } else if (pageId) {
+      window.openStaticPage(pageId);
+    } else {
+      renderHomeFeed();
+    }
+    setTimeout(updateMobileNavPill, 80);
+  });
+
+  // أزرار البحث الذكي الفوري
+  safeOn("search-toggle-btn", "click", () => {
+    const drawer = $("search-drawer");
+    if (!drawer) return;
+    drawer.classList.toggle("hidden");
+    if (!drawer.classList.contains("hidden")) {
+      $("global-search-input")?.focus();
+    }
+  });
+
+  safeOn("close-search-btn", "click", () => {
+    $("search-drawer")?.classList.add("hidden");
+    searchQuery = "";
+    const inp = $("global-search-input");
+    if (inp) inp.value = "";
+    renderHomeFeed();
+  });
+
+  safeOn("global-search-input", "input", (e) => {
+    searchQuery = (e.target.value || "").trim();
+    showView("view-home");
+    renderHomeFeed();
+  });
+
+  // الشعار والعودة للرئيسية
+  safeOn("home-brand-link", "click", (e) => {
+    e.preventDefault();
+    selectedCategory = "all";
+    selectedSubcategory = "all";
+    searchQuery = "";
+    window.history.pushState({}, "", "./");
+    renderCategoriesNav();
+    renderSidebarMenu();
+    renderSubcategoriesBar();
+    showView("view-home");
+    renderHomeFeed();
+  });
+
+  ["back-to-home-btn", "author-back-btn", "static-back-btn"].forEach(btnId => {
+    safeOn(btnId, "click", () => {
+      window.history.pushState({}, "", "./");
+      applyLanguageAndIdentity();
+      showView("view-home");
+      renderHomeFeed();
+    });
+  });
+
+  // أزرار شريط التنقل السفلي للهواتف مع أنيميشن الكبسولة المنزلقة
+  document.querySelectorAll(".mob-nav-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mob-nav-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      updateMobileNavPill();
+
+      const action = btn.dataset.action;
+      if (action === "home") {
+        $("home-brand-link")?.click();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (action === "trending") {
+        showView("view-home");
+        document.querySelector(".trending-widget")?.scrollIntoView({ behavior: "smooth" });
+      } else if (action === "search") {
+        $("search-drawer")?.classList.remove("hidden");
+        $("global-search-input")?.focus();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (action === "theme") {
+        toggleTheme();
+      }
+    });
+  });
+
+  window.addEventListener("resize", updateMobileNavPill);
+  window.addEventListener("popstate", handleUrlRouting);
+}
+
+// 4. إقلاع البيانات من Firebase بأمان تام
+async function bootPublicSite() {
+  bindImmediateUIEvents();
+
+  await Promise.allSettled([
     fetchSettings(),
     fetchCategories(),
     fetchPublishedPosts(),
@@ -146,21 +286,23 @@ async function bootPublicSite() {
   ]);
 
   applyLanguageAndIdentity();
+  renderCategoriesNav();
+  renderSidebarMenu();
   renderBreakingTicker();
   renderTopBannerAd();
   renderTrendingSidebar();
   handleUrlRouting();
-  setTimeout(updateMobileNavPill, 150);
+  setTimeout(updateMobileNavPill, 120);
 }
 
-// 4. نظام اللغتين الذكي (رصد تلقائي للغة متصفح الزائر + زر تبديل فوري)
+// 5. إدارة اللغة والمظهر الليلي/النهاري
 function initLanguage() {
   const savedLang = localStorage.getItem("bosla_lang");
   if (savedLang === "ar" || savedLang === "en") {
     currentLang = savedLang;
   } else {
-    const browserLang = (navigator.language || navigator.userLanguage || "ar").toLowerCase();
-    currentLang = browserLang.startsWith("ar") ? "ar" : "en";
+    const browserLang = (navigator.language || "ar").toLowerCase();
+    currentLang = browserLang.startsWith("en") ? "en" : "ar";
   }
   applyDocumentDirection();
 }
@@ -168,8 +310,7 @@ function initLanguage() {
 function applyDocumentDirection() {
   document.documentElement.lang = currentLang;
   document.documentElement.dir = currentLang === "ar" ? "rtl" : "ltr";
-  const label = document.getElementById("lang-toggle-label");
-  if (label) label.textContent = currentLang === "ar" ? "EN" : "عربي";
+  setText("lang-toggle-label", currentLang === "ar" ? "EN" : "عربي");
 
   const arrowIcon = currentLang === "ar" ? "arrow_forward" : "arrow_back";
   document.querySelectorAll("#back-arrow-icon, #author-back-btn .material-symbols-rounded, #static-back-btn .material-symbols-rounded").forEach(el => {
@@ -177,33 +318,43 @@ function applyDocumentDirection() {
   });
 }
 
-document.getElementById("lang-toggle-btn").addEventListener("click", () => {
-  currentLang = currentLang === "ar" ? "en" : "ar";
-  localStorage.setItem("bosla_lang", currentLang);
-  applyDocumentDirection();
-  applyLanguageAndIdentity();
-  renderCategoriesNav();
-  renderSidebarMenu();
-  renderSubcategoriesBar();
-  renderBreakingTicker();
-  renderTopBannerAd();
-  renderTrendingSidebar();
+function initTheme() {
+  const saved = localStorage.getItem("bosla_theme") || "dark";
+  document.documentElement.setAttribute("data-theme", saved);
+  updateThemeIcon(saved);
+}
 
-  // إعادة تحديث الواجهة المفتوحة حالياً
-  const params = new URLSearchParams(window.location.search);
-  const postId = params.get("post");
-  const pageId = params.get("page");
-  if (postId && publishedPosts.some(p => p.id === postId)) {
-    window.openArticle(postId, false);
-  } else if (pageId) {
-    window.openStaticPage(pageId, false);
-  } else {
-    renderHomeFeed();
-  }
-  setTimeout(updateMobileNavPill, 100);
-});
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem("bosla_theme", next);
+  updateThemeIcon(next);
+}
 
-// 5. جلب الإعدادات وتطبيق الهوية البصرية والشعار الأفقي
+function updateThemeIcon(theme) {
+  setText("theme-icon", theme === "dark" ? "light_mode" : "dark_mode");
+}
+
+function updateMobileNavPill() {
+  const activeBtn = document.querySelector("#mobile-bottom-nav .mob-nav-btn.active");
+  const indicator = $("mob-nav-indicator");
+  if (!activeBtn || !indicator) return;
+  indicator.style.width = `${activeBtn.offsetWidth}px`;
+  indicator.style.transform = `translateX(${activeBtn.offsetLeft}px)`;
+}
+
+function openSidebarDrawer() {
+  $("sidebar-drawer")?.classList.add("open");
+  $("sidebar-backdrop")?.classList.remove("hidden");
+}
+
+function closeSidebarDrawer() {
+  $("sidebar-drawer")?.classList.remove("open");
+  $("sidebar-backdrop")?.classList.add("hidden");
+}
+
+// 6. جلب وتطبيق الهوية البصرية من غرفة العمليات
 async function fetchSettings() {
   try {
     const snap = await getDoc(doc(db, "settings", "global"));
@@ -217,7 +368,7 @@ async function fetchSettings() {
       };
     }
   } catch (err) {
-    console.warn("Settings notice:", err);
+    console.warn("Settings fetch notice:", err);
   }
 }
 
@@ -228,83 +379,73 @@ function applyLanguageAndIdentity() {
   const displayNetName = currentLang === "en" ? (siteSettings.networkNameEn || siteSettings.networkName) : siteSettings.networkName;
 
   document.title = `${displaySiteName} | ${displayNetName}`;
-  document.getElementById("meta-desc")?.setAttribute("content", siteSettings.siteDesc || "");
-  document.getElementById("og-title")?.setAttribute("content", `${displaySiteName} | ${displayNetName}`);
-  document.getElementById("og-desc")?.setAttribute("content", siteSettings.siteDesc || "");
-  document.getElementById("og-image")?.setAttribute("content", activeLogo);
+  $("meta-desc")?.setAttribute("content", siteSettings.siteDesc || "");
+  $("og-title")?.setAttribute("content", `${displaySiteName} | ${displayNetName}`);
+  $("og-desc")?.setAttribute("content", siteSettings.siteDesc || "");
+  $("og-image")?.setAttribute("content", activeLogo);
 
-  const favEl = document.getElementById("dynamic-favicon");
-  const appleFavEl = document.getElementById("apple-favicon");
-  if (favEl) favEl.href = activeFavicon;
-  if (appleFavEl) appleFavEl.href = activeFavicon;
+  if ($("dynamic-favicon")) $("dynamic-favicon").href = activeFavicon;
+  if ($("apple-favicon")) $("apple-favicon").href = activeFavicon;
 
-  // تحديث الشعار في الترويسة، القائمة الجانبية، والتذييل
   ["custom-logo-img", "sidebar-logo-img", "footer-logo-img"].forEach(id => {
-    const img = document.getElementById(id);
+    const img = $(id);
     if (img) {
       img.src = activeLogo;
       img.alt = displaySiteName;
     }
   });
 
-  // إخفاء أو إظهار النص بجانب الشعار
-  const brandTextWrap = document.getElementById("brand-text-wrap");
-  if (brandTextWrap) {
-    brandTextWrap.classList.toggle("hidden", siteSettings.hideTextLogo !== false);
-  }
+  $("brand-text-wrap")?.classList.toggle("hidden", siteSettings.hideTextLogo !== false);
 
-  document.getElementById("ui-site-name").textContent = displaySiteName;
-  document.getElementById("ui-network-name").textContent = displayNetName;
-  document.getElementById("footer-site-name").textContent = displaySiteName;
-  document.getElementById("footer-site-desc").textContent = siteSettings.siteDesc;
+  setText("ui-site-name", displaySiteName);
+  setText("ui-network-name", displayNetName);
+  setText("footer-site-name", displaySiteName);
+  setText("footer-site-desc", siteSettings.siteDesc);
 
-  // ترجمة نصوص الواجهة الثابتة
-  document.getElementById("ui-breaking-label").textContent = t("breaking");
-  document.getElementById("global-search-input").placeholder = t("searchPlaceholder");
-  document.getElementById("ui-trending-heading").textContent = t("trendingHeading");
-  document.getElementById("ui-back-btn-text").textContent = t("backToNews");
-  document.getElementById("ui-author-back-text").textContent = t("backToHome");
-  document.getElementById("ui-static-back-text").textContent = t("backToHome");
-  document.getElementById("ui-summary-label").textContent = t("summaryLabel");
-  document.getElementById("ui-share-label").textContent = t("shareLabel");
-  document.getElementById("ui-copy-link-label").textContent = t("copyLink");
-  document.getElementById("ui-related-heading").textContent = t("relatedHeading");
-  document.getElementById("ui-author-badge").textContent = t("authorBadge");
-  document.getElementById("ui-footer-about").textContent = t("aboutUs");
-  document.getElementById("ui-footer-privacy").textContent = t("privacyPolicy");
-  document.getElementById("ui-copyright-text").innerHTML = `${t("rightsReserved")} <b id="footer-network-copy">${displayNetName}</b>`;
+  setText("ui-breaking-label", t("breaking"));
+  if ($("global-search-input")) $("global-search-input").placeholder = t("searchPlaceholder");
+  setText("ui-trending-heading", t("trendingHeading"));
+  setText("ui-back-btn-text", t("backToNews"));
+  setText("ui-author-back-text", t("backToHome"));
+  setText("ui-static-back-text", t("backToHome"));
+  setText("ui-summary-label", t("summaryLabel"));
+  setText("ui-share-label", t("shareLabel"));
+  setText("ui-copy-link-label", t("copyLink"));
+  setText("ui-related-heading", t("relatedHeading"));
+  setText("ui-author-badge", t("authorBadge"));
+  setText("ui-footer-about", t("aboutUs"));
+  setText("ui-footer-privacy", t("privacyPolicy"));
+  setHtml("ui-copyright-text", `${t("rightsReserved")} <b id="footer-network-copy">${displayNetName}</b>`);
 
-  document.getElementById("ui-mob-home").textContent = t("mobHome");
-  document.getElementById("ui-mob-trending").textContent = t("mobTrending");
-  document.getElementById("ui-mob-search").textContent = t("mobSearch");
-  document.getElementById("ui-mob-theme").textContent = t("mobTheme");
+  setText("ui-mob-home", t("mobHome"));
+  setText("ui-mob-trending", t("mobTrending"));
+  setText("ui-mob-search", t("mobSearch"));
+  setText("ui-mob-theme", t("mobTheme"));
 
   if (siteSettings.accentColor) {
     document.documentElement.style.setProperty("--accent", siteSettings.accentColor);
   }
 
-  // روابط منصات التواصل في الفوتر والقائمة الجانبية
   const links = [];
   if (siteSettings.socialWhatsapp) links.push(`<a href="${siteSettings.socialWhatsapp}" target="_blank" rel="noopener" class="social-pill">WhatsApp</a>`);
   if (siteSettings.socialTelegram) links.push(`<a href="${siteSettings.socialTelegram}" target="_blank" rel="noopener" class="social-pill">Telegram</a>`);
   if (siteSettings.socialX) links.push(`<a href="${siteSettings.socialX}" target="_blank" rel="noopener" class="social-pill">X</a>`);
   if (siteSettings.socialFacebook) links.push(`<a href="${siteSettings.socialFacebook}" target="_blank" rel="noopener" class="social-pill">Facebook</a>`);
 
-  document.getElementById("footer-social-links").innerHTML = links.join("");
-  document.getElementById("sidebar-social-links").innerHTML = links.join("");
+  setHtml("footer-social-links", links.join(""));
+  setHtml("sidebar-social-links", links.join(""));
 }
 
-// 6. جلب الأقسام وبناء شريط الأقسام + القائمة الجانبية المرنة (Sidebar Drawer)
+// 7. جلب الأقسام وبناء شريط الأقسام + القائمة الجانبية
 async function fetchCategories() {
   try {
     const snap = await getDocs(collection(db, "categories"));
-    const all = snap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => (a.order || 99) - (b.order || 99));
-    // إظهار الأقسام المفعلة فقط (visible !== false)
-    categories = all.filter(c => c.visible !== false);
-    renderCategoriesNav();
-    renderSidebarMenu();
+    if (!snap.empty) {
+      const all = snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.order || 99) - (b.order || 99));
+      categories = all.filter(c => c.visible !== false);
+    }
   } catch (err) {
     console.warn("Categories notice:", err);
   }
@@ -316,7 +457,9 @@ function getCatDisplayName(catObj) {
 }
 
 function renderCategoriesNav() {
-  const nav = document.getElementById("categories-nav-list");
+  const nav = $("categories-nav-list");
+  if (!nav) return;
+
   const itemsHtml = categories.map(c => `
     <button class="cat-pill ${selectedCategory === c.slug ? "active" : ""}" data-cat="${c.slug}">
       <span class="material-symbols-rounded">${c.icon || "newspaper"}</span>
@@ -340,10 +483,10 @@ function renderCategoriesNav() {
 }
 
 function renderSidebarMenu() {
-  const list = document.getElementById("sidebar-menu-list");
+  const list = $("sidebar-menu-list");
+  if (!list) return;
   const items = [];
 
-  // 1. قسم "من نحن" في أعلى القائمة الجانبية (إذا كان مفعلاً في غرفة العمليات)
   if (siteSettings.showAboutMenu !== false) {
     items.push(`
       <li class="sidebar-menu-item">
@@ -355,7 +498,6 @@ function renderSidebarMenu() {
     `);
   }
 
-  // 2. كافة الأقسام المفعلة من غرفة العمليات (محلية، دولية، تحقيقات، حوارات، بودكاست، فيديو...)
   categories.forEach(c => {
     items.push(`
       <li class="sidebar-menu-item">
@@ -367,7 +509,6 @@ function renderSidebarMenu() {
     `);
   });
 
-  // 3. صفحة سياسة الخصوصية (للتوافق التام مع Google AdSense)
   if (siteSettings.showAboutMenu !== false) {
     items.push(`
       <li class="sidebar-menu-item">
@@ -400,26 +541,10 @@ function selectCategoryAndRender(catSlug) {
   renderHomeFeed();
 }
 
-// فتح وإغلاق القائمة الجانبية
-const sidebarDrawer = document.getElementById("sidebar-drawer");
-const sidebarBackdrop = document.getElementById("sidebar-backdrop");
-
-function openSidebarDrawer() {
-  sidebarDrawer.classList.add("open");
-  sidebarBackdrop.classList.remove("hidden");
-}
-
-function closeSidebarDrawer() {
-  sidebarDrawer.classList.remove("open");
-  sidebarBackdrop.classList.add("hidden");
-}
-
-document.getElementById("open-sidebar-btn").addEventListener("click", openSidebarDrawer);
-document.getElementById("close-sidebar-btn").addEventListener("click", closeSidebarDrawer);
-sidebarBackdrop.addEventListener("click", closeSidebarDrawer);
-
 function renderSubcategoriesBar() {
-  const bar = document.getElementById("subcategories-bar");
+  const bar = $("subcategories-bar");
+  if (!bar) return;
+
   if (selectedCategory === "all") {
     bar.classList.add("hidden");
     return;
@@ -446,20 +571,25 @@ function renderSubcategoriesBar() {
   });
 }
 
-// 7. جلب المنشورات المنشورة فقط ودعم اللغتين للمقالات
+// 8. جلب المنشورات بأمان وترتيبها زمنياً
 async function fetchPublishedPosts() {
   try {
-    const q = query(collection(db, "posts"), orderBy("createdAt", "desc"));
-    const snap = await getDocs(q);
+    const snap = await getDocs(collection(db, "posts"));
     const raw = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    publishedPosts = raw.filter(p => p.status === "published");
+    publishedPosts = raw
+      .filter(p => p.status === "published")
+      .sort((a, b) => {
+        const timeA = a.createdAt?.seconds ? a.createdAt.seconds : 0;
+        const timeB = b.createdAt?.seconds ? b.createdAt.seconds : 0;
+        return timeB - timeA;
+      });
   } catch (err) {
     console.error("Error loading posts:", err);
   }
 }
 
 function getPostTitle(post) {
-  return currentLang === "en" && post.titleEn ? post.titleEn : post.title;
+  return currentLang === "en" && post.titleEn ? post.titleEn : (post.title || "");
 }
 
 function getPostSummary(post) {
@@ -473,10 +603,10 @@ function getPostContent(post) {
 function getPostCategoryName(post) {
   const catObj = categories.find(c => c.slug === post.category);
   if (catObj) return getCatDisplayName(catObj);
-  return currentLang === "en" && post.categoryNameEn ? post.categoryNameEn : (post.categoryName || "");
+  return currentLang === "en" && post.categoryNameEn ? post.categoryNameEn : (post.categoryName || "عام");
 }
 
-// 8. محرك الإعلانات المطور (يدعم البانر الأفقي الممتد Leaderboard + الشريط الزجاجي)
+// 9. محرك الإعلانات (يدعم البانر الأفقي الممتد Leaderboard + الشريط الزجاجي)
 async function fetchSponsoredAds() {
   try {
     const snap = await getDocs(collection(db, "ads"));
@@ -516,7 +646,6 @@ function buildAdHtml(ad, uniqueDomId) {
     updateDoc(doc(db, "ads", ad.id), { views: increment(1) }).catch(() => {});
   }
 
-  // 1. تصميم البانر الإعلاني الأفقي الممتد (Leaderboard Banner)
   if (ad.adStyle === "banner" && ad.imageUrl) {
     return `
       <div class="leaderboard-ad-banner" id="ad-box-${uniqueDomId}">
@@ -534,7 +663,6 @@ function buildAdHtml(ad, uniqueDomId) {
     `;
   }
 
-  // 2. تصميم بطاقة الرعاية الزجاجية المدمجة
   const thumbHtml = ad.imageUrl 
     ? `<img src="${ad.imageUrl}" alt="${ad.title}" class="glass-ad-thumb">`
     : "";
@@ -562,16 +690,15 @@ window.recordAdClick = (adId, isFallback) => {
 };
 
 function renderTopBannerAd() {
-  const slot = document.getElementById("ad-slot-top");
   const ad = getAdForPlacement("top");
-  slot.innerHTML = ad ? buildAdHtml(ad, "top_main") : "";
+  setHtml("ad-slot-top", ad ? buildAdHtml(ad, "top_main") : "");
 }
 
-// 9. شريط الأخبار العاجلة
+// 10. شريط الأخبار العاجلة
 function renderBreakingTicker() {
   const breakingPosts = publishedPosts.filter(p => p.isBreaking);
-  const wrap = document.getElementById("breaking-ticker-wrap");
-  const list = document.getElementById("breaking-list");
+  const wrap = $("breaking-ticker-wrap");
+  if (!wrap) return;
 
   if (breakingPosts.length === 0) {
     wrap.classList.add("hidden");
@@ -579,12 +706,12 @@ function renderBreakingTicker() {
   }
 
   wrap.classList.remove("hidden");
-  list.innerHTML = breakingPosts.map(p => `
+  setHtml("breaking-list", breakingPosts.map(p => `
     <a class="breaking-item" onclick="window.openArticle('${p.id}')">⚡ ${getPostTitle(p)}</a>
-  `).join("");
+  `).join(""));
 }
 
-// 10. عرض الصفحة الرئيسية + محرك البحث الذكي الفوري + أيقونات الوسائط
+// 11. عرض الصفحة الرئيسية + البحث الذكي
 function getMediaOverlayIcon(postType) {
   if (postType === "video") return `<div class="media-overlay-icon"><span class="material-symbols-rounded">play_arrow</span></div>`;
   if (postType === "infographic") return `<div class="media-overlay-icon"><span class="material-symbols-rounded">monitoring</span></div>`;
@@ -594,10 +721,10 @@ function getMediaOverlayIcon(postType) {
 }
 
 function renderHomeFeed() {
-  const heroContainer = document.getElementById("hero-section");
-  const gridContainer = document.getElementById("posts-grid");
-  const heading = document.getElementById("feed-heading");
-  const searchBadge = document.getElementById("search-count-badge");
+  const heroContainer = $("hero-section");
+  const gridContainer = $("posts-grid");
+  const searchBadge = $("search-count-badge");
+  if (!gridContainer) return;
 
   let filtered = publishedPosts.filter(p => {
     if (selectedCategory !== "all" && p.category !== selectedCategory) return false;
@@ -618,21 +745,23 @@ function renderHomeFeed() {
   });
 
   if (searchQuery) {
-    searchBadge.textContent = filtered.length;
-    searchBadge.classList.remove("hidden");
-    heading.textContent = `${t("searchResultsFor")} "${searchQuery}" (${filtered.length})`;
+    if (searchBadge) {
+      searchBadge.textContent = filtered.length;
+      searchBadge.classList.remove("hidden");
+    }
+    setText("feed-heading", `${t("searchResultsFor")} "${searchQuery}" (${filtered.length})`);
   } else {
-    searchBadge.classList.add("hidden");
+    searchBadge?.classList.add("hidden");
     if (selectedCategory === "all") {
-      heading.textContent = t("latestFeed");
+      setText("feed-heading", t("latestFeed"));
     } else {
       const catObj = categories.find(c => c.slug === selectedCategory);
-      heading.textContent = catObj ? getCatDisplayName(catObj) : t("latestFeed");
+      setText("feed-heading", catObj ? getCatDisplayName(catObj) : t("latestFeed"));
     }
   }
 
   if (filtered.length === 0) {
-    heroContainer.innerHTML = "";
+    if (heroContainer) heroContainer.innerHTML = "";
     gridContainer.innerHTML = `<div class="glass-surface skeleton-card">${t("noPosts")}</div>`;
     return;
   }
@@ -641,7 +770,7 @@ function renderHomeFeed() {
   let heroPost = filtered.find(p => p.isFeatured) || filtered[0];
   let restPosts = filtered.filter(p => p.id !== heroPost.id);
 
-  if (selectedCategory === "all" && !searchQuery && heroPost) {
+  if (selectedCategory === "all" && !searchQuery && heroPost && heroContainer) {
     const heroImg = heroPost.imageUrl || defaultThumb;
     heroContainer.innerHTML = `
       <div class="glass-surface hero-card" onclick="window.openArticle('${heroPost.id}')">
@@ -663,7 +792,7 @@ function renderHomeFeed() {
       </div>
     `;
   } else {
-    heroContainer.innerHTML = "";
+    if (heroContainer) heroContainer.innerHTML = "";
     restPosts = filtered;
   }
 
@@ -698,9 +827,10 @@ function renderHomeFeed() {
   gridContainer.innerHTML = cardsHtml.join("");
 }
 
-// 11. خوارزمية الأكثر قراءة (Trending)
+// 12. خوارزمية الأكثر قراءة
 function renderTrendingSidebar() {
-  const container = document.getElementById("trending-list");
+  const container = $("trending-list");
+  if (!container) return;
   const sorted = [...publishedPosts].sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 5);
 
   if (sorted.length === 0) {
@@ -719,18 +849,31 @@ function renderTrendingSidebar() {
   `).join("");
 }
 
-// 12. استخراج معرف يوتيوب الذكي وبناء مشغل الوسائط (فيديو / بودكاست / صورة)
-function extractYouTubeId(url) {
-  if (!url) return null;
-  const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-  const match = url.match(regExp);
-  return match ? match[1] : null;
+// 13. استخراج معرف يوتيوب الآمن وبناء مشغل الوسائط (فيديو / بودكاست / صورة)
+function extractYouTubeId(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.hostname.includes("youtu.be")) {
+      return parsed.pathname.slice(1).split("/")[0];
+    }
+    if (parsed.searchParams.get("v")) {
+      return parsed.searchParams.get("v");
+    }
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const embedIdx = parts.findIndex(p => p === "embed" || p === "shorts" || p === "v");
+    if (embedIdx !== -1 && parts[embedIdx + 1]) {
+      return parts[embedIdx + 1];
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
 }
 
 function buildArticleMediaHtml(post) {
   const ytId = extractYouTubeId(post.videoUrl);
 
-  // 1. إذا كان المقال فيديو أو فيديو جرافيك ويحتوي على رابط يوتيوب
   if ((post.postType === "video" || post.postType === "infographic" || ytId) && ytId) {
     return `
       <div class="video-embed-wrap">
@@ -739,7 +882,6 @@ function buildArticleMediaHtml(post) {
     `;
   }
 
-  // 2. إذا كان المقال حلقة بودكاست (بطاقة توجيه خفيفة وأنيقة بدون إثقال الموقع)
   if (post.postType === "podcast" && post.podcastUrl) {
     const cover = post.imageUrl || siteSettings.logoUrl || DEFAULT_LOGO;
     const platform = post.podcastPlatform || "Spotify";
@@ -760,7 +902,6 @@ function buildArticleMediaHtml(post) {
     `;
   }
 
-  // 3. الصورة البارزة القياسية
   if (post.imageUrl) {
     return `
       <figure class="article-figure">
@@ -772,7 +913,7 @@ function buildArticleMediaHtml(post) {
   return "";
 }
 
-// 13. فتح وقراءة المقال الكامل + تنسيقات محرر الوورد + حقن الإعلان الوسطي
+// 14. فتح وقراءة المقال الكامل
 window.openArticle = async (postId, incrementCounter = true) => {
   const post = publishedPosts.find(p => p.id === postId);
   if (!post) return;
@@ -788,22 +929,23 @@ window.openArticle = async (postId, incrementCounter = true) => {
     renderTrendingSidebar();
   }
 
-  document.getElementById("art-badges").innerHTML = `
+  setHtml("art-badges", `
     <span class="badge-pill">${getPostCategoryName(post)}</span>
     ${post.subcategory ? `<span class="badge-pill">${post.subcategory}</span>` : ""}
-  `;
-  document.getElementById("art-title").textContent = getPostTitle(post);
-  document.getElementById("art-summary").textContent = getPostSummary(post);
-  document.getElementById("art-author").textContent = post.author || t("editorialTeam");
-  document.getElementById("art-date").textContent = formatLocalizedDate(post.createdAt);
-  document.getElementById("art-views").textContent = post.views || 0;
+  `);
+  setText("art-title", getPostTitle(post));
+  setText("art-summary", getPostSummary(post));
+  setText("art-author", post.author || t("editorialTeam"));
+  setText("art-date", formatLocalizedDate(post.createdAt));
+  setText("art-views", post.views || 0);
 
-  document.getElementById("art-author-btn").onclick = () => openAuthorProfile(post.author || t("editorialTeam"));
+  const authorBtn = $("art-author-btn");
+  if (authorBtn) {
+    authorBtn.onclick = () => openAuthorProfile(post.author || t("editorialTeam"));
+  }
 
-  // عرض الوسائط (مشغل يوتيوب / بطاقة بودكاست / صورة)
-  document.getElementById("art-media-slot").innerHTML = buildArticleMediaHtml(post);
+  setHtml("art-media-slot", buildArticleMediaHtml(post));
 
-  // تنسيق المتن وحقن الإعلان الوسطي بعد الفقرة الثانية
   const formattedParagraphs = formatArticleContent(getPostContent(post));
   const inArticleAd = getAdForPlacement("in_article");
   if (inArticleAd && formattedParagraphs.length >= 2) {
@@ -811,18 +953,16 @@ window.openArticle = async (postId, incrementCounter = true) => {
   } else if (inArticleAd) {
     formattedParagraphs.push(`<div class="ad-slot-wrapper">${buildAdHtml(inArticleAd, "article_end_" + post.id)}</div>`);
   }
-  document.getElementById("art-body").innerHTML = formattedParagraphs.join("");
+  setHtml("art-body", formattedParagraphs.join(""));
 
-  // الوسوم
-  document.getElementById("art-tags").innerHTML = (post.tags || []).map(tag => `<span class="tag-chip">#${tag}</span>`).join("");
+  setHtml("art-tags", (post.tags || []).map(tag => `<span class="tag-chip">#${tag}</span>`).join(""));
 
-  // المشاركة
   const shareUrl = window.location.href;
   const shareTitle = `${getPostTitle(post)} - ${currentLang === "en" ? siteSettings.siteNameEn : siteSettings.siteName}`;
-  document.getElementById("share-wa").onclick = () => window.open(`https://wa.me/?text=${encodeURIComponent(shareTitle + "\n" + shareUrl)}`, "_blank");
-  document.getElementById("share-x").onclick = () => window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(shareTitle)}&url=${encodeURIComponent(shareUrl)}`, "_blank");
-  document.getElementById("share-tg").onclick = () => window.open(`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(shareTitle)}`, "_blank");
-  document.getElementById("share-copy").onclick = () => {
+  if ($("share-wa")) $("share-wa").onclick = () => window.open(`https://wa.me/?text=${encodeURIComponent(shareTitle + "\n" + shareUrl)}`, "_blank");
+  if ($("share-x")) $("share-x").onclick = () => window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(shareTitle)}&url=${encodeURIComponent(shareUrl)}`, "_blank");
+  if ($("share-tg")) $("share-tg").onclick = () => window.open(`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(shareTitle)}`, "_blank");
+  if ($("share-copy")) $("share-copy").onclick = () => {
     navigator.clipboard.writeText(shareUrl);
     showPublicToast(t("linkCopied"));
   };
@@ -830,7 +970,7 @@ window.openArticle = async (postId, incrementCounter = true) => {
   updateArticleSeoSchema(post, shareUrl);
 
   const related = publishedPosts.filter(p => p.id !== post.id && p.category === post.category).slice(0, 3);
-  document.getElementById("related-grid").innerHTML = related.map(r => `
+  setHtml("related-grid", related.map(r => `
     <article class="glass-surface news-card" onclick="window.openArticle('${r.id}')">
       <div class="card-body">
         <span class="badge-pill" style="align-self:flex-start;">${getPostCategoryName(r)}</span>
@@ -841,7 +981,7 @@ window.openArticle = async (postId, incrementCounter = true) => {
         </div>
       </div>
     </article>
-  `).join("");
+  `).join(""));
 };
 
 function formatArticleContent(rawText) {
@@ -866,7 +1006,8 @@ function formatArticleContent(rawText) {
 function updateArticleSeoSchema(post, url) {
   const displaySite = currentLang === "en" ? siteSettings.siteNameEn : siteSettings.siteName;
   document.title = `${getPostTitle(post)} | ${displaySite}`;
-  const schemaScript = document.getElementById("schema-jsonld");
+  const schemaScript = $("schema-jsonld");
+  if (!schemaScript) return;
   const isoDate = post.createdAt?.toDate ? post.createdAt.toDate().toISOString() : new Date().toISOString();
 
   const schemaData = {
@@ -893,23 +1034,19 @@ function updateArticleSeoSchema(post, url) {
   schemaScript.textContent = JSON.stringify(schemaData);
 }
 
-// 14. فتح صفحات "من نحن" و"سياسة الخصوصية" القابلة للتعديل من غرفة العمليات
+// 15. صفحات "من نحن" و"سياسة الخصوصية"
 window.openStaticPage = (pageType) => {
   closeSidebarDrawer();
   window.history.pushState({ pageType }, "", `?page=${pageType}`);
   showView("view-static");
   window.scrollTo({ top: 0, behavior: "smooth" });
 
-  const titleEl = document.getElementById("static-page-title");
-  const bodyEl = document.getElementById("static-page-body");
-  const badgeEl = document.getElementById("static-page-badge");
-
   const displaySite = currentLang === "en" ? siteSettings.siteNameEn : siteSettings.siteName;
   const displayNet = currentLang === "en" ? siteSettings.networkNameEn : siteSettings.networkName;
-  badgeEl.textContent = displayNet;
+  setText("static-page-badge", displayNet);
 
   if (pageType === "about") {
-    titleEl.textContent = t("aboutUs");
+    setText("static-page-title", t("aboutUs"));
     const defaultAboutAr = `## ${siteSettings.siteName}\nمنصة إخبارية وتحليلية مستقلة تعمل ضمن "${siteSettings.networkName}"، تأسست لتقديم قراءة معمقة وموثوقة للأحداث السياسية، الاقتصادية، التقنية، والثقافية في اليمن والمنطقة والعالم.\n## رؤيتنا التحريرية\nنلتزم بأعلى معايير الدقة المهنية، التحقق من المصادر، وفصل الخبر عن الرأي، مع توفير مساحة حرة للتحليلات الاستراتيجية والحوارات البناءة.`;
     const defaultAboutEn = `## About ${siteSettings.siteNameEn}\nAn independent news and analytical platform operating under ${siteSettings.networkNameEn}, dedicated to delivering in-depth coverage of Yemeni, regional, and international politics, technology, and culture.`;
 
@@ -922,25 +1059,25 @@ window.openStaticPage = (pageType) => {
       <p>${siteSettings.contactEmail ? `📧 Email: <strong>${siteSettings.contactEmail}</strong>` : ""} ${siteSettings.contactPhone ? `<br>📞 Phone / WhatsApp: <strong>${siteSettings.contactPhone}</strong>` : ""}</p>
     ` : "";
 
-    bodyEl.innerHTML = formatArticleContent(rawAbout).join("") + contactHtml;
+    setHtml("static-page-body", formatArticleContent(rawAbout).join("") + contactHtml);
   } else {
-    titleEl.textContent = t("privacyPolicy");
+    setText("static-page-title", t("privacyPolicy"));
     const defaultPrivacy = `## سياسة الخصوصية وحماية البيانات\nتحترم منصة "${displaySite}" (${displayNet}) خصوصية جميع زوارها وتلتزم بحماية بياناتهم وفق المعايير الدولية.\n## ملفات تعريف الارتباط (Cookies) وإعلانات Google AdSense\nيستخدم موقعنا ملفات تعريف الارتباط لتحسين تجربة التصفح وحفظ تفضيلات القارئ. كما قد نستخدم خدمات إعلانية لطرف ثالث مثل (Google AdSense) لعرض إعلانات ملائمة لاهتمامات الزائر.`;
     const rawPrivacy = siteSettings.privacyContent || defaultPrivacy;
-    bodyEl.innerHTML = formatArticleContent(rawPrivacy).join("");
+    setHtml("static-page-body", formatArticleContent(rawPrivacy).join(""));
   }
 };
 
-// 15. صفحة ملف الكاتب
+// 16. صفحة ملف الكاتب
 function openAuthorProfile(authorName) {
   showView("view-author");
   window.scrollTo({ top: 0, behavior: "smooth" });
   const authorPosts = publishedPosts.filter(p => (p.author || t("editorialTeam")) === authorName);
 
-  document.getElementById("profile-author-name").textContent = authorName;
-  document.getElementById("profile-author-count").textContent = `${t("authorTotalPosts")} ${authorPosts.length}`;
+  setText("profile-author-name", authorName);
+  setText("profile-author-count", `${t("authorTotalPosts")} ${authorPosts.length}`);
 
-  document.getElementById("author-posts-grid").innerHTML = authorPosts.map(post => `
+  setHtml("author-posts-grid", authorPosts.map(post => `
     <article class="glass-surface news-card" onclick="window.openArticle('${post.id}')">
       <div class="card-body">
         <span class="badge-pill" style="align-self:flex-start;">${getPostCategoryName(post)}</span>
@@ -952,13 +1089,13 @@ function openAuthorProfile(authorName) {
         </div>
       </div>
     </article>
-  `).join("");
+  `).join(""));
 }
 
-// 16. إدارة التنقل، أنيميشن الكبسولة السفلية (Morphing Pill)، والوضع الليلي/النهاري
+// 17. إدارة التنقل بين الشاشات
 function showView(viewId) {
   ["view-home", "view-article", "view-author", "view-static"].forEach(id => {
-    const el = document.getElementById(id);
+    const el = $(id);
     if (!el) return;
     if (id === viewId) {
       el.classList.remove("hidden");
@@ -984,108 +1121,6 @@ function handleUrlRouting() {
   }
 }
 
-window.addEventListener("popstate", handleUrlRouting);
-
-["back-to-home-btn", "author-back-btn", "static-back-btn"].forEach(btnId => {
-  document.getElementById(btnId)?.addEventListener("click", () => {
-    window.history.pushState({}, "", "./");
-    applyLanguageAndIdentity();
-    showView("view-home");
-    renderHomeFeed();
-  });
-});
-
-document.getElementById("home-brand-link").addEventListener("click", (e) => {
-  e.preventDefault();
-  selectedCategory = "all";
-  selectedSubcategory = "all";
-  searchQuery = "";
-  window.history.pushState({}, "", "./");
-  renderCategoriesNav();
-  renderSidebarMenu();
-  renderSubcategoriesBar();
-  showView("view-home");
-  renderHomeFeed();
-});
-
-// البحث الذكي الفوري
-const searchDrawer = document.getElementById("search-drawer");
-const searchInput = document.getElementById("global-search-input");
-
-document.getElementById("search-toggle-btn").addEventListener("click", () => {
-  searchDrawer.classList.toggle("hidden");
-  if (!searchDrawer.classList.contains("hidden")) searchInput.focus();
-});
-
-document.getElementById("close-search-btn").addEventListener("click", () => {
-  searchDrawer.classList.add("hidden");
-  searchQuery = "";
-  searchInput.value = "";
-  renderHomeFeed();
-});
-
-searchInput.addEventListener("input", (e) => {
-  searchQuery = e.target.value.trim();
-  showView("view-home");
-  renderHomeFeed();
-});
-
-// الوضع الليلي والنهاري
-function initTheme() {
-  const saved = localStorage.getItem("bosla_theme") || "dark";
-  document.documentElement.setAttribute("data-theme", saved);
-  updateThemeIcon(saved);
-}
-
-function toggleTheme() {
-  const current = document.documentElement.getAttribute("data-theme");
-  const next = current === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  localStorage.setItem("bosla_theme", next);
-  updateThemeIcon(next);
-}
-
-function updateThemeIcon(theme) {
-  const icon = document.getElementById("theme-icon");
-  if (icon) icon.textContent = theme === "dark" ? "light_mode" : "dark_mode";
-}
-
-document.getElementById("theme-toggle-btn").addEventListener("click", toggleTheme);
-
-// أنيميشن الكبسولة المنزلقة (Morphing Pill Animation) في الشريط السفلي للهواتف
-function updateMobileNavPill() {
-  const activeBtn = document.querySelector("#mobile-bottom-nav .mob-nav-btn.active");
-  const indicator = document.getElementById("mob-nav-indicator");
-  if (!activeBtn || !indicator) return;
-  indicator.style.width = `${activeBtn.offsetWidth}px`;
-  indicator.style.transform = `translateX(${activeBtn.offsetLeft}px)`;
-}
-
-window.addEventListener("resize", updateMobileNavPill);
-
-document.querySelectorAll(".mob-nav-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".mob-nav-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    updateMobileNavPill();
-
-    const action = btn.dataset.action;
-    if (action === "home") {
-      document.getElementById("home-brand-link").click();
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } else if (action === "trending") {
-      showView("view-home");
-      document.querySelector(".trending-widget")?.scrollIntoView({ behavior: "smooth" });
-    } else if (action === "search") {
-      searchDrawer.classList.remove("hidden");
-      searchInput.focus();
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } else if (action === "theme") {
-      toggleTheme();
-    }
-  });
-});
-
 function formatLocalizedDate(timestamp) {
   if (!timestamp) return currentLang === "en" ? "Just now" : "الآن";
   const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
@@ -1094,7 +1129,8 @@ function formatLocalizedDate(timestamp) {
 }
 
 function showPublicToast(msg) {
-  const toast = document.getElementById("public-toast");
+  const toast = $("public-toast");
+  if (!toast) return;
   toast.textContent = msg;
   toast.classList.remove("hidden");
   setTimeout(() => toast.classList.add("hidden"), 2600);
