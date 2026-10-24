@@ -139,7 +139,7 @@ const FALLBACK_CATEGORIES = [
 ];
 
 let siteSettings = {
-  siteName: "بوصلة السياسة اليمنية",
+  siteName: "الصحافة من  ",
   networkName: "شبكة البوصلة",
   siteDesc: "منصة إخبارية وتحليلية ترصد كواليس السياسة والتقنية والثقافة",
   logoUrl: "",
